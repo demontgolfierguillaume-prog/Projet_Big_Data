@@ -1,0 +1,428 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.2cm, top=2.5cm, bottom=2.5cm]{geometry}
+\usepackage[english]{babel}
+
+\usepackage{xcolor}
+\definecolor{eblue}{HTML}{1A3A5C}
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{warnbg}{HTML}{FFF3CD}
+\definecolor{infobg}{HTML}{D1ECF1}
+\definecolor{tipbg}{HTML}{D4EDDA}
+\definecolor{dangerbg}{HTML}{F8D7DA}
+
+\usepackage[most]{tcolorbox}
+\newtcolorbox{warningbox}[1][]{
+  colback=warnbg, colframe=orange!70!black,
+  fonttitle=\bfseries, title={\small Warning},
+  boxrule=0.5pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt, #1
+}
+\newtcolorbox{infobox}[1][]{
+  colback=infobg, colframe=cyan!50!black,
+  fonttitle=\bfseries, title={\small Info},
+  boxrule=0.5pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt, #1
+}
+\newtcolorbox{tipbox}[1][]{
+  colback=tipbg, colframe=green!50!black,
+  fonttitle=\bfseries, title={\small Hint},
+  boxrule=0.5pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt, #1
+}
+\newtcolorbox{dangerbox}[1][]{
+  colback=dangerbg, colframe=red!60!black,
+  fonttitle=\bfseries, title={\small Important},
+  boxrule=0.5pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt, #1
+}
+
+\usepackage{listings}
+\lstset{
+  language=Python,
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  stringstyle=\color{red!60!black},
+  commentstyle=\color{green!50!black}\itshape,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{gray!40},
+  framesep=6pt,
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  showstringspaces=false,
+  tabsize=4,
+  columns=fullflexible,
+}
+
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{amssymb}  % \square in Part A checklist
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=eblue, urlcolor=eblue}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\textcolor{eblue}{Big Data Processing -- Lab 4}}
+\rhead{\small\textcolor{eblue}{EPF Engineering School}}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries\color{eblue}}{Part \thesection:}{0.5em}{}
+\titleformat{\subsection}{\large\bfseries\color{eblue!80!black}}{\thesubsection}{0.5em}{}
+
+\begin{document}
+
+\begin{center}
+  {\huge\bfseries\color{eblue} Lab\,4 -- Capstone: Orchestrating an Airflow \& Spark Data Pipeline}\\[8pt]
+  {\large Big Data Processing -- EPF Engineering School}\\[6pt]
+  {\normalsize Th\'eo Burdinat \quad\texttt{theo.burdinat1@epfedu.fr}}\\[4pt]
+  {\normalsize June 5 \& 10, 2026 \quad|\quad Pair work \quad|\quad English}\\[6pt]
+  {\small\textit{Kit: \texttt{lab4\_student.zip} on Moodle. Run \texttt{Setup\_TP4.md} before the lab.}}
+\end{center}
+
+% =====================================================================
+\section*{Context and goal}
+\label{sec:context}
+
+\subsection*{The situation}
+
+A retail partner drops \textbf{one CSV file per day} of store transactions.
+Operations wants a \textbf{daily KPI dashboard}: revenue and transaction counts by category and country.
+In Lab\,3 you already built the \textbf{orchestration shell}: wait for the file, ingest to Parquet, publish a report path.
+Lab\,4 adds the \textbf{analytics layer}: PySpark computes the KPIs; Airflow still decides \emph{when} each step runs and what happens on failure.
+
+\subsection*{What we want at the end}
+
+For a logical day \texttt{ds} (e.g.\ \texttt{2026-06-03}), a successful capstone run should:
+
+\begin{enumerate}[nosep]
+  \item Find \texttt{data/incoming/transactions\_<ds>.csv} (dropped by the vendor simulator).
+  \item Produce typed silver Parquet under \texttt{data/raw/dt=<ds>/}.
+  \item Run \textbf{your} Spark job: curated KPI Parquet under \texttt{data/curated/dt=<ds>/} and a small JSON report
+        \texttt{data/reports/dashboard\_<ds>.json} (totals + paths for the UI).
+  \item Expose this through \textbf{your} Airflow DAG ($\geq$5 tasks), with a visible failure when data is bad.
+  \item Support \textbf{idempotence}: triggering the same \texttt{ds} again must not duplicate KPI rows or JSON metrics.
+\end{enumerate}
+
+You \textbf{design} the graph and implement \texttt{include/team\_<shortname>\_spark.py}.
+
+% =====================================================================
+\section*{Simulating the vendor: \texttt{scripts/vendor\_drop.py}}
+\label{sec:vendor}
+
+\textbf{\texttt{vendor\_drop.py}} plays the upstream vendor: it writes CSVs into \texttt{data/incoming/} on your laptop.
+
+\noindent\textbf{Run it on the host} (outside Docker), from the extracted \texttt{lab4\_student/} folder:
+
+\begin{lstlisting}[language=bash]
+python scripts/vendor_drop.py --seed-pack --volume small
+python scripts/vendor_drop.py --reference
+\end{lstlisting}
+
+\begin{itemize}[nosep]
+  \item \textbf{Normal use:} creates \texttt{transactions\_YYYY-MM-DD.csv} with realistic columns
+        (\texttt{tx\_id}, \texttt{category}, \texttt{country}, \texttt{amount\_eur}, \ldots).
+  \item \textbf{Deterministic:} same date $\Rightarrow$ same data (handy for debugging and demos).
+  \item \textbf{Then:} your Airflow \texttt{FileSensor} waits for that file; the DAG ingests and runs Spark for \texttt{ds}.
+\end{itemize}
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{} l p{9.2cm} @{}}
+\toprule
+\textbf{Option} & \textbf{When you use it in the lab} \\
+\midrule
+\texttt{--date 2026-06-03} & Drop a single day before testing one \texttt{ds} in the UI \\
+\texttt{--seed-pack} & Create June 1--14, 2026 in one go (typical first setup) \\
+\texttt{--volume small} / \texttt{medium} & Row count (default \texttt{small} $\approx$ 200 rows; enough on a laptop) \\
+\texttt{--corrupt} & All \texttt{amount\_eur} = 0 --- use to test \texttt{validate} and a \textbf{red task} in Airflow \\
+\texttt{--reference} & Writes \texttt{data/reference/category\_targets.csv} (optional join target for Track S) \\
+\texttt{--delay 60} & Waits before writing --- simulates a \textbf{late} vendor file (sensor / SLA thinking) \\
+\texttt{--range START:END} & Several days without calling \texttt{--seed-pack} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+If the sensor never turns green, the usual mistake is: \textbf{no CSV for that \texttt{ds}} --- run \texttt{vendor\_drop} for that date first.
+
+% =====================================================================
+\section*{Target architecture (what each layer should contain)}
+\label{sec:arch}
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{} l l p{5.2cm} p{3.8cm} @{}}
+\toprule
+\textbf{Layer} & \textbf{Path (one day \texttt{ds})} & \textbf{Content} & \textbf{Who builds it} \\
+\midrule
+Bronze & \texttt{data/incoming/} & Raw CSV ``as delivered'' & \texttt{vendor\_drop.py} \\
+Silver & \texttt{data/raw/dt=<ds>/} & Clean Parquet, one partition per day & Provided \texttt{ingest\_day} (DuckDB) \\
+Gold & \texttt{data/curated/dt=<ds>/} & KPI aggregates (e.g.\ by category \& country) & \textbf{Your} PySpark module \\
+Serve & \texttt{data/reports/} & \texttt{dashboard\_<ds>.json} for a mock BI screen & \textbf{Your} pipeline (written after Spark) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section*{Deliverables}
+\label{sec:create}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Provided (examples)} & \textbf{You create (graded)} & \textbf{Minimum} \\
+\midrule
+DAG \texttt{lab4\_starter} & \texttt{dags/team\_*.py} & $\geq$ \textbf{5 Airflow tasks} (you create) \\
+Smoke-test Spark (Docker image) & \texttt{include/team\_<name>\_spark.py} & $\geq$ 3 Spark transforms (you create) \\
+Templates docs & Implement \& extend & Templates unchanged = fail \\
+Tracks R, S, O, Q, P, X & Optional & Not required to pass \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Airflow --- at least 5 tasks}
+
+The reference DAG \texttt{lab4\_starter} (file \texttt{dags/starter\_pipeline.py}) has only \textbf{4 tasks}.
+
+\noindent\textbf{Your} capstone DAG (\texttt{dags/team\_*.py}) must define \textbf{at least 5 new Airflow tasks}
+(sensor, \texttt{@task}, or operator --- each counts as one task).
+Each task must have a \textbf{clear role} documented in \texttt{README\_TEAM.md}
+(wait, ingest, validate, compute, publish, alert, \ldots).
+
+\textbf{Examples of tasks} (choose your own names and order):
+\begin{itemize}[nosep]
+  \item \texttt{validate} --- fail if silver data is corrupt
+  \item \texttt{notify\_on\_failure} --- marker file or log on failure
+  \item \texttt{export\_summary} --- copy JSON to a second location
+\end{itemize}
+
+\subsection*{Spark ($\geq$ 3 transformations you implement)}
+
+Copy \texttt{include/team\_spark\_TEMPLATE.py} to \texttt{include/team\_<name>\_spark.py}:
+\begin{itemize}[nosep]
+  \item \textbf{Three functions} (e.g.\ \texttt{transform\_1}, \texttt{transform\_2}, \texttt{transform\_3}):
+        read $\rightarrow$ enrich $\rightarrow$ aggregate.
+  \item \texttt{run\_daily(logical\_date)} called from your Airflow Spark task.
+  \item Outputs: Parquet under \texttt{data/curated/dt=<date>/} and \texttt{data/reports/dashboard\_<date>.json}.
+\end{itemize}
+
+Design your three transforms from the spec above (read $\rightarrow$ enrich $\rightarrow$ aggregate); the starter smoke test does not ship reference Spark source in the kit.
+
+\subsection*{Also required}
+
+\begin{itemize}[nosep]
+  \item Idempotent re-run for one \texttt{execution\_date} (\texttt{ds})
+  \item Failure visible in the Airflow UI (demo with \texttt{vendor\_drop --corrupt} recommended)
+  \item \texttt{README\_TEAM.md} in English: all tasks, all Spark steps, diagram, backfill command
+\end{itemize}
+
+% =====================================================================
+\section*{Schedule}
+\label{sec:schedule}
+
+\begin{center}
+\begin{tabular}{@{} l l p{7.5cm} @{}}
+\toprule
+\textbf{When} & \textbf{Time} & \textbf{What} \\
+\midrule
+June 5 & CM4 + Part A (3\,h) & Smoke test; plan; \textbf{start} your DAG and Spark module \\
+June 5--9 & $\sim$3\,h & Part B: finish capstone; optional tracks R--X \\
+\textbf{June 9} & \textbf{23:59} & Push Git + upload slides on Moodle (repo URL on slides) \\
+June 10 & 15\,min + Q\&A & Part C: demo + defense (English) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section*{Grading}
+\label{sec:grading}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{} p{10cm} c @{}}
+\toprule
+\textbf{Criterion} & \textbf{\%} \\
+\midrule
+Technical (pipeline, \textbf{your} Spark, orchestration, README) & 50\% \\
+Defense (explain \textbf{what \& why}; live demo $\sim$5\,min) & 50\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section*{Submission (deadline: June 9, 23:59)}
+\label{sec:submission}
+
+\textbf{Deadline: Monday June 9, 2026, 23:59} (before Part C on June 10).
+
+\subsection*{Git --- one repository per pair}
+
+\textbf{Each pair creates its own repository} (GitHub).
+The instructor does \textbf{not} provide a shared course repo.
+
+\begin{itemize}[nosep]
+  \item \textbf{Public repository} --- the instructor can clone/read without an invite, \textbf{or}
+  \item \textbf{Private repository} --- add \texttt{theoburdinat} on GitHub with \textbf{read} access.
+  \item Suggested tree at repo root: \texttt{dags/}, \texttt{include/}, \texttt{README\_TEAM.md}
+        (same layout as inside the ZIP, but \textbf{without} committing the whole Moodle archive).
+  \item \textbf{Required paths:} \texttt{dags/team\_<shortname>.py},
+        \texttt{include/team\_<shortname>\_spark.py}, \texttt{README\_TEAM.md};
+        optional \texttt{demo\_backup/} for screenshots.
+  \item Default branch \texttt{main} (or \texttt{master}); push before the deadline.
+\end{itemize}
+
+\subsection*{Moodle --- submit (deadline June 9, 23:59)}
+
+\begin{itemize}[nosep]
+  \item \textbf{One upload per pair:} Part C \textbf{slides} (PDF or PPTX) on Moodle
+  \item Slides must include: context, architecture, task table ($\geq$5), Spark steps ($\geq$3), demo plan
+  \item \textbf{On the slides:} your pair's Git repo \textbf{HTTPS clone URL} (title slide or architecture slide)
+\end{itemize}
+
+
+% =====================================================================
+\section*{Part A -- June 5 in class (3 hours)}
+\label{sec:parta}
+
+\begin{dangerbox}
+Complete \texttt{Setup\_TP4.md} before the lab. Run \texttt{lab4\_starter} only to verify Docker, Java, and PySpark.
+\end{dangerbox}
+
+\subsection*{A0 -- Smoke test}
+
+Run \texttt{python scripts/smoke\_test.py} (or trigger DAG \texttt{lab4\_starter} for \texttt{2026-06-01} in the UI).
+
+\noindent\textbf{Done when:} \texttt{data/reports/dashboard\_2026-06-01.json} exists with \texttt{"status": "smoke\_ok"} (PySpark config check only).
+
+\subsection*{A1 -- Plan}
+
+\begin{enumerate}[label=\textbf{A1.\arabic*}]
+  \item Copy \texttt{team\_TEMPLATE.py} $\rightarrow$ \texttt{dags/team\_<name>.py};
+        \texttt{team\_spark\_TEMPLATE.py} $\rightarrow$ \texttt{include/team\_<name>\_spark.py}.
+  \item List your Airflow tasks ($\geq$ \textbf{5}; names + role in the pipeline).
+  \item List $\geq$ \textbf{3 Spark transformations} (with a short description).
+  \item Start \texttt{README\_TEAM.md} (template in kit).
+\end{enumerate}
+
+\subsection*{A2 -- Start the capstone}
+
+\textbf{Goal:} a working skeleton, not necessarily a finished capstone.
+
+\begin{itemize}[nosep]
+  \item[$\square$] $\geq$ \textbf{5 Airflow tasks} wired in \texttt{dags/team\_<name>.py} (validate uncommented is enough for 5)
+  \item[$\square$] $\geq$ \textbf{3 Spark transforms} started in \texttt{include/team\_<name>\_spark.py}
+  \item[$\square$] At least one green run for one \texttt{ds} (two dates + idempotence check $\rightarrow$ Part B)
+\end{itemize}
+
+\subsection*{A3 -- Tracks}
+
+Pick optional tracks for Part~B ; describe you additional work in \texttt{README\_TEAM.md}. The more tracks you complete, the better your grade will be (you will get questions about different concepts, don't use ChatGPT to make all the work for you).
+
+% =====================================================================
+\section*{Part B -- Autonomy (June 5--9, \texorpdfstring{$\sim$}{~}3 hours)}
+\label{sec:partb}
+
+Finish the mandatory checklist in Part A, push to Git and upload slides on Moodle
+(deadline \textbf{June 9, 23:59}), then optional tracks. Rehearse Part C.
+
+\begin{lstlisting}[language=bash]
+docker compose exec airflow-scheduler \
+  airflow dags backfill team_yourname -s 2026-06-01 -e 2026-06-07 --reset-dagruns
+\end{lstlisting}
+
+% =====================================================================
+
+\section*{Exploration tracks (optional)}
+\label{sec:tracks}
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{} c l p{9cm} @{}}
+\toprule
+\textbf{ID} & \textbf{Name} & \textbf{Examples} \\
+\midrule
+R & Reliability & Retries, callbacks, sensor timeout, backfill docs \\
+S & Spark depth & Strict schema, broadcast join, shuffle notes \\
+O & Orchestration & TaskGroups, dynamic mapping, Datasets \\
+Q & Data quality & Row-count bounds; demo \texttt{--corrupt} \\
+P & Custom & Your proposal + README design paragraph \\
+X & SparkSubmit & Cluster-style submit (Appendix~\ref{app:trackx}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Part C -- Defense (June 10)}
+\label{sec:defense}
+
+\textbf{Slot:} 15\,min presentation + 5--10\,min Q\&A per pair (\textbf{English}).
+
+Present your Airflow tasks ($\geq$ \textbf{5}) and Spark steps ($\geq$ \textbf{3}) \textbf{before} the demo.
+The jury grades \textbf{understanding}: for each major choice, be ready to say \textbf{what you did} and \textbf{why}
+(not a line-by-line code walkthrough).
+
+\textbf{Q\&A:} \textbf{Each student} answers \textbf{several questions} individually (typically 2--4),
+covering orchestration, Spark, idempotence, and failure modes --- not a single question per person.
+
+\begin{tipbox}[title=Backup if live demo fails]
+Prepare a small backup folder (or slides): Airflow graph screenshot (green run),
+\texttt{dashboard\_<ds>.json} or curated path, optional red task after \texttt{--corrupt}.
+If Docker fails on June 10, you can still defend with screenshots --- but \textbf{try the live demo first}.
+\end{tipbox}
+
+\begin{enumerate}[label=\textbf{\arabic*.}]
+  \item \textbf{Context} --- business problem ($\sim$2\,min)
+  \item \textbf{Architecture} --- diagram; table of tasks and Spark steps ($\sim$3\,min)
+  \item \textbf{Live demo} --- one happy path; optional \texttt{--corrupt} failure ($\sim$5\,min)
+  \item \textbf{Technical choices} --- idempotence, validate-before-Spark, one Spark decision ($\sim$3\,min)
+  \item \textbf{Production \& tracks} --- \texttt{local[*]} vs cluster; tracks attempted ($\sim$2\,min)
+\end{enumerate}
+
+\textbf{Example questions:} How many Airflow tasks in your DAG? Re-run same \texttt{ds}?
+Why validate \textbf{before} Spark? What does \texttt{vendor\_drop --corrupt} change?
+
+% =====================================================================
+\appendix
+\section{README\_TEAM.md template}
+\label{app:readme}
+
+\begin{lstlisting}
+# Team / DAG id: team_<shortname>
+
+## Airflow (5 tasks)
+| task_id | Role |
+|---------|------|
+| ...     | ...  |
+
+## Spark (>=3, include/team_<shortname>_spark.py)
+1. transform_1: ...
+2. transform_2: ...
+3. transform_3: ...
+
+## Idempotence / backfill / failure demo
+## Tracks attempted (optional)
+## Demo script (June 10, ~5 min live)
+## Demo backup (screenshots if live demo fails)
+\end{lstlisting}
+
+\section{Track X -- SparkSubmitOperator}
+\label{app:trackx}
+
+\begin{itemize}[nosep]
+  \item \textbf{Capstone Spark code} lives in \texttt{include/team\_<name>\_spark.py} (called from a \texttt{@task}).
+  \item \texttt{spark\_jobs/daily\_kpis.py} is a \textbf{CLI wrapper} for \texttt{spark-submit} only (Track X).
+  \item In production, \texttt{SparkSubmitOperator} submits \texttt{spark-submit} to a cluster;
+        Airflow workers only monitor status.
+  \item Document in \texttt{README\_TEAM.md} why you kept or dropped in-process \texttt{SparkSession} on a laptop.
+\end{itemize}
+
+\end{document}

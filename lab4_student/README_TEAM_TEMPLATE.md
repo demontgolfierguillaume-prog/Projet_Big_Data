@@ -102,9 +102,14 @@ python scripts/vendor_drop.py --date 2026-06-03 --corrupt
 
 ## 9. Production next steps
 
-
-![alt text](succes.png)
-
-image fail:
-![alt text](image-1.png)
+succes:
 ![alt text](image.png)
+
+fail:
+![alt text](image-1.png)
+
+log fail:
+![alt text](image-2.png)
+
+notif fail:
+![alt text](image-3.png)
